@@ -185,7 +185,7 @@ impl HangSrc {
 			.consume_broadcast(&name)
 			.ok_or_else(|| anyhow::anyhow!("Broadcast '{}' not found", name))?;
 
-		let catalog = broadcast.subscribe_track(&hang::Catalog::default_track());
+		let catalog = broadcast.subscribe_track(&hang::catalog::Catalog::default_track());
 		let mut catalog = hang::catalog::CatalogConsumer::new(catalog);
 
 		// TODO handle catalog updates
@@ -194,7 +194,8 @@ impl HangSrc {
 		if let Some(video) = catalog.video {
 			for (track_name, config) in video.renditions {
 				let track_ref = hang::moq_lite::Track::new(&track_name);
-				let mut track: hang::TrackConsumer = broadcast.subscribe_track(&track_ref).into();
+				let mut track =
+					hang::TrackConsumer::new(broadcast.subscribe_track(&track_ref), std::time::Duration::from_secs(1));
 
 				let caps = match config.codec {
 					hang::catalog::VideoCodec::H264(_) => {
@@ -239,14 +240,15 @@ impl HangSrc {
 				let mut reference = None;
 				tokio::spawn(async move {
 					loop {
-						match track.read().await {
+						match track.read_frame().await {
 							Ok(Some(frame)) => {
-								let mut buffer = gst::Buffer::from_slice(frame.payload);
+								let payload: Vec<u8> = frame.payload.into_iter().flatten().collect();
+								let mut buffer = gst::Buffer::from_slice(payload);
 								let buffer_mut = buffer.get_mut().unwrap();
 
 								// Make timestamps relative to the first frame for proper playback
 								let pts = if let Some(reference_ts) = reference {
-									let timestamp: std::time::Duration = frame.timestamp - reference_ts;
+									let timestamp: std::time::Duration = (frame.timestamp - reference_ts).into();
 									gst::ClockTime::from_nseconds(timestamp.as_nanos() as _)
 								} else {
 									reference = Some(frame.timestamp);
@@ -287,7 +289,8 @@ impl HangSrc {
 		if let Some(audio) = catalog.audio {
 			for (track_name, config) in audio.renditions {
 				let track_ref = hang::moq_lite::Track::new(&track_name);
-				let mut track: hang::TrackConsumer = broadcast.subscribe_track(&track_ref).into();
+				let mut track =
+					hang::TrackConsumer::new(broadcast.subscribe_track(&track_ref), std::time::Duration::from_secs(1));
 
 				let caps = match &config.codec {
 					hang::catalog::AudioCodec::AAC(_aac) => {
@@ -346,14 +349,15 @@ impl HangSrc {
 				let mut reference = None;
 				tokio::spawn(async move {
 					loop {
-						match track.read().await {
+						match track.read_frame().await {
 							Ok(Some(frame)) => {
-								let mut buffer = gst::Buffer::from_slice(frame.payload);
+								let payload: Vec<u8> = frame.payload.into_iter().flatten().collect();
+								let mut buffer = gst::Buffer::from_slice(payload);
 								let buffer_mut = buffer.get_mut().unwrap();
 
 								// Make timestamps relative to the first frame for proper playback
 								let pts = if let Some(reference_ts) = reference {
-									let timestamp: std::time::Duration = frame.timestamp - reference_ts;
+									let timestamp: std::time::Duration = (frame.timestamp - reference_ts).into();
 									gst::ClockTime::from_nseconds(timestamp.as_nanos() as _)
 								} else {
 									reference = Some(frame.timestamp);
