@@ -1,4 +1,5 @@
 use anyhow::Context as _;
+use bytes::BytesMut;
 use gst::glib;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
@@ -28,7 +29,8 @@ struct Settings {
 
 #[derive(Default)]
 struct State {
-	pub media: Option<hang::cmaf::Import>,
+	pub media: Option<hang::import::Fmp4>,
+	pub buffer: BytesMut,
 }
 
 #[derive(Default)]
@@ -140,11 +142,23 @@ impl BaseSinkImpl for HangSink {
 		let data = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
 
 		let mut state = self.state.lock().unwrap();
+
+		// Append incoming data to our buffer
+		state.buffer.extend_from_slice(data.as_slice());
+
+		// Take media out temporarily to avoid borrow conflict
 		let mut media = state.media.take().expect("not initialized");
 
-		// TODO avoid full media parsing? gst should be able to provide the necessary info
-		media.parse(data.as_slice()).expect("failed to parse");
+		// Try to decode what we have buffered
+		let result = media.decode(&mut state.buffer);
+
+		// Put media back
 		state.media = Some(media);
+
+		if let Err(e) = result {
+			gst::error!(gst::CAT_DEFAULT, "Failed to decode: {}", e);
+			return Err(gst::FlowError::Error);
+		}
 
 		Ok(gst::FlowSuccess::Ok)
 	}
@@ -180,7 +194,7 @@ impl HangSink {
 				.await
 				.expect("failed to connect");
 
-			let media = hang::cmaf::Import::new(broadcast.producer);
+			let media = hang::import::Fmp4::new(broadcast.producer.into());
 
 			let mut state = self.state.lock().unwrap();
 			state.media = Some(media);
